@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="canvasjs.min.js"></script>
+    <title>ESP8266 High speed pressure reader</title>
+    <link rel="stylesheet" href="local.css">
+    <script>
+        var adc_bits = 12; //12bit
+        var V_ref = 3.3; //V
+
+        const TP_Enabled_Number = 2;
+        var max_ch = [60, 40]; //channel values associated with 20ma
+        var min_ch = [0, 0];
+        var max_ch = [parseFloat(localStorage.getItem("maxch0")), parseFloat(localStorage.getItem("maxch1"))];
+        var min_ch = [parseFloat(localStorage.getItem("minch0")), parseFloat(localStorage.getItem("minch1"))];
+
+        //var R_ch = [163, 163] // Ohm (measured) - V2.1
+        //var R_ch = [162.5, 162.9] // Ohm (measured) - ATIT
+        //var R_ch = [163, 163.3] // Ohm (measured) - V2.1 - "HighSpeedReader-1"
+        var R_ch = [164.1, 163.1] // Ohm (measured) - V2.1 - "HighSpeedReader-2"
+
+        var ADCmaxValue = Math.pow(2, adc_bits);
+        var ADCvalue4ma = ADCmaxValue * 4 / 20;
+
+        var previous_message_time = 0;
+        var current_time = new Date();
+        var ycoord;
+        var ycoord_converted = []; //holds all channels measurements, like ycoord
+
+        var chart;
+        var dataPoints_ch0 = [];
+        var dataPoints_ch1 = [];
+
+        var rolling_average_elements = 10;
+        var doVisualUpdates = true;
+
+        var roundtriptime = {
+            'id': 'rt',
+            'date': Date.now(),
+            'time': null
+        }
+
+        document.addEventListener('visibilitychange', function () {
+            doVisualUpdates = !document.hidden;
+        });
+
+        function start() {
+            chart = new CanvasJS.Chart("graph", {
+                axisX: {
+                    title: "Time [ms]"
+                },
+                axisY: {
+                    title: localStorage.getItem("reading_type") + " readings [" + localStorage.getItem("reading_unit") + "]",
+                    maximum: Math.max(...max_ch) + 1,
+                    minimum: -1
+                },
+                data: [
+                    {
+                        type: "line",
+                        lineThickness: 1,
+                        dataPoints: dataPoints_ch0
+                    }, {
+                        type: "line",
+                        lineThickness: 1,
+                        dataPoints: dataPoints_ch1
+                    }
+                ]
+            });
+
+            chart.render();
+
+            websocket = new WebSocket('ws://192.168.4.1:81/');
+            websocket.onopen = function (evt) {
+                console.log('Websocket OPEN');
+                document.getElementById('start').classList.remove("button-warning");
+                document.getElementById('start').classList.add("button-success");
+
+                const rtt = setInterval(function() {
+                    roundtriptime.date = Date.now();
+                    websocket.send(roundtriptime.id);
+                }, 5000);
+            };
+            websocket.onclose = function (evt) {
+                console.log('Websocket CLOSE');
+                document.getElementById('start').classList.remove("button-success");
+                document.getElementById('start').classList.add("button-warning");
+
+                clearInterval(rtt);
+            };
+            websocket.onerror = function (evt) {
+                console.log("Error message: " + evt);
+                console.log(evt);
+            };
+            websocket.onmessage = function (evt) {
+                //console.log(evt);
+                if (evt.data instanceof Blob) {
+                    interpret_data(evt);
+                } else if (evt.data > 0) {
+                    console.log("New minimum time between ADC readings: " + evt.data + "us");
+                    document.getElementById("minTimeBetweenADC").innerHTML = evt.data;
+                } else if (evt.data == "start") {
+                    console.log("START");
+                    document.getElementById('start').classList.remove("button-secondary");
+                    document.getElementById('start').classList.add("button-warning");
+                } else if (evt.data == "stop") {
+                    console.log("STOP");
+                    document.getElementById('start').classList.remove("button-warning");
+                    document.getElementById('start').classList.add("button-secondary");
+                } else if (evt.data == "rt") {
+                    console.log("ROUND TRIP message received");
+                    roundtriptime.time = Date.now() - roundtriptime.date;
+                    document.getElementById('rtt').innerHTML = roundtriptime.time + "ms";
+                }
+            };
+
+            // check if localStorage is available, use it if it is, otherwise use default
+            if (localStorage.getItem("maxY")) {
+                chart.axisY[0].set("maximum", localStorage.getItem("maxY"));
+                document.getElementById("chartmax").value = localStorage.getItem("maxY");
+            } else {
+                document.getElementById("chartmax").value = Math.max(...max_ch) + 1; // '...' is ad unbundle operator [] -> ( , , , )
+            }
+            if (localStorage.getItem("minY")) {
+                chart.axisY[0].set("minimum", localStorage.getItem("minY"));
+                document.getElementById("chartmin").value = localStorage.getItem("minY")
+            } else {
+                document.getElementById("chartmin").value = -1;
+            }
+            if (localStorage.getItem("rolling_average_elements")) {
+                rolling_average_elements = localStorage.getItem("rolling_average_elements");
+                document.getElementById("rolling_average_elements").value = rolling_average_elements;
+            } else {
+                document.getElementById("rolling_average_elements").value = rolling_average_elements;
+            }
+            if (localStorage.getItem("rolling_average")) {
+                document.getElementById("rolling_average").checked = localStorage.getItem("rolling_average").toLowerCase() == 'true' ? true : false;
+                show_rolling_average_elements(localStorage.getItem("rolling_average").toLowerCase() == 'true' ? true : false);
+            } else {
+                document.getElementById("rolling_average_elements_visibility").style.visibility = "hidden";
+            }
+        }
+
+        function interpret_data(evt) {
+            reader = new FileReader();
+            reader.onload = function (e) {
+                ycoord = new Uint16Array(e.target.result); //interpret base 16 data
+                //console.log(ycoord);
+                document.getElementById('counter').innerText = Math.round((ycoord.length - 1) / TP_Enabled_Number / (ycoord[ycoord.length - 1] / 1000)); //calculate reading frequency
+                previous_message_time = current_time.getTime();
+                for (var i = 0; i < (ycoord.length - 1); i += TP_Enabled_Number) { //translate raw measurements to bar
+                    for (var y = 0; y < TP_Enabled_Number; y++) {
+                        ycoord_converted[i + y] = (ycoord[i + y] / ADCmaxValue * V_ref / R_ch[y] - 0.004) * max_ch[y] / (0.02 - 0.004) + min_ch[y];
+                    }
+                }
+                //console.log(ycoord_converted);
+                if (doVisualUpdates) {
+                    graph(); //use canvasjs to chart the data
+                }
+            }
+            reader.readAsArrayBuffer(evt.data);
+        }
+
+        function graph() { //update series with ycoord_converted data
+            var x_time = 0;
+            //take sent microsecond count, divide by number of readings (one channel)
+            var delta_x_time = ycoord[ycoord.length - 1] / (ycoord_converted.length / TP_Enabled_Number);
+            document.getElementById("realtime").innerText = delta_x_time * 1000 + " us";
+            //console.log(delta_x_time);
+
+            if (document.getElementById("rolling_average").checked) { //enable-disable rolling average on measurements
+                for (var i = TP_Enabled_Number * rolling_average_elements - 1; i < ycoord_converted.length; i += 1) {
+                    sum = 0;
+                    for (var j = i; j > i - TP_Enabled_Number * rolling_average_elements; j -= TP_Enabled_Number) {
+                        sum += ycoord_converted[j];
+                    }
+                    ycoord_converted[i] = sum / rolling_average_elements;
+                }
+            }
+
+            for (var i = 0; i < ycoord_converted.length; i += TP_Enabled_Number) { //write data on vector used by chart
+                chart.options.data[0].dataPoints[i / TP_Enabled_Number] = { y: ycoord_converted[i], x: x_time };
+                chart.options.data[1].dataPoints[i / TP_Enabled_Number] = { y: ycoord_converted[i + 1], x: x_time };
+                x_time += delta_x_time; //ms
+            }
+            chart.render();
+        }
+
+        function buttonclick(e) {
+            if (e.id === 'start') {
+                e.classList.remove("button-secondary");
+                e.classList.add("button-success");
+            }
+
+            if (e.id === 'stop') {
+                document.getElementById('start').classList.remove("button-success");
+                document.getElementById('start').classList.add("button-secondary");
+            }
+            websocket.send(e.id);
+        };
+
+        function update_chart_maximum(e) {
+            chart.axisY[0].set("maximum", e.value);
+            localStorage.setItem("maxY", e.value);
+        }
+
+        function update_chart_minimum(e) {
+            chart.axisY[0].set("minimum", e.value);
+            localStorage.setItem("minY", e.value);
+        }
+
+        function update_rolling_average_elements(e) {
+            rolling_average_elements = e.value;
+            localStorage.setItem("rolling_average_elements", e.value);
+        }
+
+        function show_rolling_average_elements(checked) {
+            localStorage.setItem("rolling_average", checked);
+            if (checked) {
+                document.getElementById("rolling_average_elements_visibility").style.visibility = "visible";
+            } else {
+                document.getElementById("rolling_average_elements_visibility").style.visibility = "hidden";
+            }
+        }
+
+        function channeltoggled(e) {
+            //console.log(e.id[e.id.length - 1]);
+            chart.data[e.id[e.id.length - 1]].set("visible", e.checked);
+        }
+    </script>
+</head>
+
+<body onload="javascript:start();">
+    <div id="wrapper">
+        <div id="control" class="X" style="float:left">
+            <button id="start" class="button button-secondary" onclick="buttonclick(this);">Start</button>
+            <button id="stop" class="button button-error" onclick="buttonclick(this);">Stop</button>
+            <button id="disconnect" class="button button-error" onclick="buttonclick(this);">Disconnect Clients</button>
+            <button id="settings" class="button button-secondary" onclick="location.href = './settings.html';">Settings</button>
+            <br />
+            <h4 style="margin-bottom: 0px;"> Chart MAX - MIN </h4>
+            <span>
+                Chart Y MAX <input type="number" onchange="update_chart_maximum(this)" id="chartmax" class="smallinput" />
+                Chart Y MIN <input type="number" onchange="update_chart_minimum(this)" id="chartmin" class="smallinput" /><br>
+                Rolling Average <input type="checkbox" id="rolling_average" onchange="show_rolling_average_elements(document.getElementById('rolling_average').checked);" />
+                <div id="rolling_average_elements_visibility">
+                    Rolling Average Elements<input type="number" onchange="update_rolling_average_elements(this)" id="rolling_average_elements" class="smallinput" />
+                </div>
+            </span>
+        </div>
+        <div class="X" style="text-align:center">
+            <h2>System update frequency:<span id="counter" style="padding: 20px;">0</span> Hz</h2>
+            <h3>
+                <span style="padding: 20px;">Channels: </span>
+                Ch0<input type="checkbox" onclick="channeltoggled(this)" id="ch0" checked>
+                Ch1<input type="checkbox" onclick="channeltoggled(this)" id="ch1" checked>
+            </h3>
+        </div>
+        <div id="timestep" class="X" style="text-align:right">
+            <h4 style="margin-top: 0px; margin-bottom: 0px;"> Min time between ADC readings </h4>
+            <span id="minTimeBetweenADC">1000</span> us
+            <button id="plusfifty" class="button button-secondary small" onclick="buttonclick(this);">+50 us</button>
+            <button id="minusfifty" class="button button-secondary small" onclick="buttonclick(this);">-50 us</button>
+            <div style="padding-top: 10px">
+                <span>Real time: </span>
+                <span id="realtime"></span>
+            </div>
+            <div style="padding-top: 10px">
+                <span>Round trip time: </span>
+                <span id="rtt"></span>
+            </div>
+        </div>
+    </div>
+    <div id="graph"></div>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ESP8266 High speed reader</title>
+    <link rel="stylesheet" href="local.css">
+    <script>
+        function start() {
+            // check if localStorage is available, use it if it is, otherwise use default
+            for (i = 0; i < 2; i++) {
+                if (localStorage.getItem("maxch" + i)) {
+                    document.getElementById("maxch" + i).value = localStorage.getItem("maxch" + i);
+                } else {
+                    document.getElementById("maxch" + i).value = 0;
+                }
+                if (localStorage.getItem("minch" + i)) {
+                    document.getElementById("minch" + i).value = localStorage.getItem("minch" + i);
+                } else {
+                    document.getElementById("minch" + i).value = 0;
+                }
+            }
+            if (localStorage.getItem("reading_type")) {
+                document.getElementById("reading_type").value = localStorage.getItem("reading_type");
+            } else {
+                document.getElementById("reading_type").value = "Undefined";
+            }
+            if (localStorage.getItem("reading_unit")) {
+                document.getElementById("reading_unit").value = localStorage.getItem("reading_unit");
+            } else {
+                document.getElementById("reading_unit").value = "Undefined";
+            }
+        }
+
+        function ch_value_changed(e) {
+            if (e.id.slice(0, 1) == "maxch" || e.id.slice(0, 1) == "minch") {
+                console.log("Channel " + e.id[e.id.length - 1] + " limit changed to: " + document.getElementById(e.id).value);
+                localStorage.setItem(e.id, parseFloat(document.getElementById(e.id).value));
+            } else {
+                localStorage.setItem(e.id, document.getElementById(e.id).value);
+            }
+        }
+    </script>
+</head>
+
+<body onload="javascript:start();">
+    <div id="wrapper">
+        <div id="control" class="X" style="float:left">
+            <button id="home" class="button button-secondary" onclick="location.href = './index.html';">Home</button>
+            <br />
+            <h4 style="margin-bottom: 0px;"> Sensor max (20mA)</h4>
+            <span id="channels">
+                Ch0 <input type="number" onchange="ch_value_changed(this)" id="maxch0" class="smallinput">
+                Ch1 <input type="number" onchange="ch_value_changed(this)" id="maxch1" class="smallinput">
+            </span>
+            <h4 style="margin-bottom: 0px;"> Sensor min (4mA)</h4>
+            <span id="channels">
+                Ch0 <input type="number" onchange="ch_value_changed(this)" id="minch0" class="smallinput">
+                Ch1 <input type="number" onchange="ch_value_changed(this)" id="minch1" class="smallinput">
+            </span>
+            <h4 style="margin-bottom: 0px;"> Strings</h4>
+            <span id="channels">
+                Reading type <input type="text" onchange="ch_value_changed(this)" id="reading_type" class="mediuminput">
+                Reading unit <input type="text" onchange="ch_value_changed(this)" id="reading_unit" class="mediuminput">
+            </span>
+        </div>
+    </div>
+</body>
+</html>
